@@ -1,4 +1,5 @@
-aiogram==3.14.1
-aiofiles
+aiogram>=3.4.0,<3.10.0
 asyncpg
+pydantic
+
 
