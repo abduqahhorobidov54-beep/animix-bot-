@@ -81,10 +81,14 @@ async def play_episode(call: CallbackQuery):
     await call.message.answer_video(video=video_id, caption=f"🎬 {animes[anime_id]['name']}\n🗓 {season}-fasl, {ep}-qism")
 
 async def main():
+    # Bazani ishga tushirish qatori
+    from database import init_db
     await init_db()
+    
     print("🤖 Bot muvaffaqiyatli ishga tushdi...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
+
