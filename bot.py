@@ -1,94 +1,172 @@
 import asyncio
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from config import BOT_TOKEN, SUPER_ADMIN
-from database import init_db, read_data, write_data
-from keyboards import get_admin_menu
-import admin, anime
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from database import init_db, get_all_anime, save_anime_db, get_next_anime_id, add_user_to_stats, get_total_users
 
-bot = Bot(token=BOT_TOKEN)
+# Bot tokeningizni shu yerga yozing
+TOKEN = "8980539059:AAE4UdU4bXjv3Cp00a-WrhitnUKMwgbFwp4" # O'zingizniki bilan almashtiring
+ADMIN_ID = 6052679916 # O'zingizning Telegram ID'ngiz
+
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-dp.include_router(admin.router)
-dp.include_router(anime.router)
+# Admin holatlarini kuzatish uchun oddiy lug'at
+admin_states = {}
 
-@dp.message(CommandStart())
+@dp.message(F.text == "/start")
 async def start_cmd(message: Message):
-    await init_db()
-    users = await read_data("users")
-    if message.from_user.id not in users:
-        users.append(message.from_user.id)
-        await write_data("users", users)
-        
-    args = message.text.split()
-    if len(args) > 1:
-        anime_id = args[1]
-        animes = await read_data("anime")
-        if anime_id in animes:
-            ani = animes[anime_id]
-            caption = f"🎬 **{ani['name']}**\n\n🎭 Janr: {ani['genre']}\n📝 Tavsif: {ani['desc']}"
-            
-            buttons = []
-            for season in ani["seasons"].keys():
-                buttons.append([InlineKeyboardButton(text=f"{season}-Fasl", callback_data=f"show_episodes_{anime_id}_{season}")])
-            
-            admins = await read_data("admins")
-            if message.from_user.id == SUPER_ADMIN or message.from_user.id in admins:
-                buttons.append([InlineKeyboardButton(text="➕ Fasl qo'shish", callback_data=f"add_season_{anime_id}")])
+    if message.from_user.id != ADMIN_ID:
+        await add_user_to_stats()
+    
+    await message.answer(
+        "👋 Assalomu alaykum! Animix botga xush kelibsiz.\n"
+        "Bu yerda siz o'zingizga yoqqan animelarni tomosha qilishingiz mumkin."
+    )
+
+@dp.message(F.text == "/panel")
+async def admin_panel(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Anime qo'shish", callback_type="add_anime")],
+        [InlineKeyboardButton(text="📊 Statistika", callback_type="stats")]
+    ])
+    await message.answer("🛠 Admin panelga xush kelibsiz:", reply_markup=kb)
+
+@dp.callback_query(F.data == "stats")
+async def show_stats(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    users = await get_total_users()
+    await call.message.answer(f"📊 Botdagi jami foydalanuvchilar: {users} ta")
+    await call.answer()
+
+@dp.callback_query(F.data == "add_anime")
+async def add_anime_start(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    admin_states[call.from_user.id] = {"step": "title"}
+    await call.message.answer("📝 Anime nomini kiriting:")
+    await call.answer()
+
+@dp.message()
+async def handle_admin_inputs(message: Message):
+    if message.from_user.id != ADMIN_ID or message.from_user.id not in admin_states:
+        # Agar foydalanuvchi qidirayotgan bo'lsa (Anime ID yozganda)
+        if message.text and message.text.isdigit():
+            animes = await get_all_anime()
+            anime_id = message.text
+            if anime_id in animes:
+                anime = animes[anime_id]
+                text = f"🎬 *{anime['title']}*\n\nジャンル: {anime['genres']}\n📝 {anime['description']}"
                 
-            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-            await message.answer_photo(photo=ani['poster'], caption=caption, reply_markup=kb)
+                # Fasllar tugmalarini yasash
+                kb_list = []
+                for idx, season in enumerate(anime.get('seasons', [])):
+                    kb_list.append([InlineKeyboardButton(text=f"{idx+1}-fasl", callback_data=f"season_{anime_id}_{idx}")])
+                
+                kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
+                if anime['photo_id']:
+                    await message.answer_photo(photo=anime['photo_id'], caption=text, parse_mode="Markdown", reply_markup=kb)
+                else:
+                    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+            else:
+                await message.answer("❌ Bunday ID dagi anime topilmadi.")
+        return
+
+    state = admin_states[message.from_user.id]
+    step = state["step"]
+
+    if step == "title":
+        state["title"] = message.text
+        state["step"] = "genres"
+        await message.answer("🎭 Janrlarini kiriting:")
+        
+    elif step == "genres":
+        state["genres"] = message.text
+        state["step"] = "description"
+        await message.answer("📝 Anime haqida qisqacha tavsif kiriting:")
+        
+    elif step == "description":
+        state["description"] = message.text
+        state["step"] = "photo"
+        await message.answer("🖼 Anime uchun rasm (poster) yuboring:")
+        
+    elif step == "photo":
+        if not message.photo:
+            await message.answer("❌ Iltimos, rasm yuboring!")
             return
-
-    admins = await read_data("admins")
-    if message.from_user.id == SUPER_ADMIN or message.from_user.id in admins:
-        await message.answer("Xush kelibsiz, Admin! Quyidagi menyudan foydalaning:", reply_markup=get_admin_menu())
-    else:
-        await message.answer("Salom! Kinolar kanaldagi 'Tomosha qilish' tugmasi orqali ko'rsatiladi.")
-
-@dp.message(Command("panel"))
-async def open_panel(message: Message):
-    admins = await read_data("admins")
-    if message.from_user.id == SUPER_ADMIN or message.from_user.id in admins:
-        await message.answer("Admin panel ochildi:", reply_markup=get_admin_menu())
-
-@dp.callback_query(F.data.startswith("show_episodes_"))
-async def show_episodes(call: CallbackQuery):
-    _, _, anime_id, season = call.data.split("_")
-    animes = await read_data("anime")
-    ani = animes[anime_id]
-    
-    buttons = []
-    episodes = ani["seasons"][season]
-    
-    for ep in episodes.keys():
-        buttons.append([InlineKeyboardButton(text=f"{ep}-qism", callback_data=f"play_{anime_id}_{season}_{ep}")])
+        state["photo_id"] = message.photo[-1].file_id
         
-    admins = await read_data("admins")
-    if call.from_user.id == SUPER_ADMIN or call.from_user.id in admins:
-        buttons.append([InlineKeyboardButton(text="➕ Qism qo'shish", callback_data=f"add_ep_{anime_id}_{season}")])
+        # Bazadan yangi ID olish
+        next_id = await get_next_anime_id()
         
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await call.message.answer(f"🎬 {ani['name']} — {season}-fasl qismlari:", reply_markup=kb)
+        anime_data = {
+            "title": state["title"],
+            "genres": state["genres"],
+            "description": state["description"],
+            "photo_id": state["photo_id"],
+            "seasons": []
+        }
+        
+        await save_anime_db(next_id, anime_data)
+        del admin_states[message.from_user.id]
+        await message.answer(f"✅ Anime muvaffaqiyatli qo'shildi!\n🆔 Anime ID: `{next_id}`", parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("season_"))
+async def show_season_episodes(call: CallbackQuery):
+    # format: season_animeid_seasonidx
+    parts = call.data.split("_")
+    anime_id = parts[1]
+    season_idx = int(parts[2])
+    
+    animes = await get_all_anime()
+    if anime_id in animes:
+        anime = animes[anime_id]
+        season = anime['seasons'][season_idx]
+        
+        kb_list = []
+        # Qismlar tugmachalarini 3 tadan qilib chiroyli tizish
+        row = []
+        for ep_idx in range(len(season)):
+            row.append(InlineKeyboardButton(text=f"{ep_idx+1}-qism", callback_data=f"play_{anime_id}_{season_idx}_{ep_idx}"))
+            if len(row) == 3:
+                kb_list.append(row)
+                row = []
+        if row:
+            kb_list.append(row)
+            
+        kb_list.append([InlineKeyboardButton(text="⬅️ Ortga", callback_data="back_to_anime")]) # Oddiy ortga qaytish tugmasi
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
+        await call.message.edit_reply_markup(reply_markup=kb)
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("play_"))
 async def play_episode(call: CallbackQuery):
-    _, anime_id, season, ep = call.data.split("_")
-    animes = await read_data("anime")
-    video_id = animes[anime_id]["seasons"][season][ep]
+    # format: play_animeid_seasonidx_epidx
+    parts = call.data.split("_")
+    anime_id = parts[1]
+    season_idx = int(parts[2])
+    ep_idx = int(parts[3])
     
-    await call.message.answer_video(video=video_id, caption=f"🎬 {animes[anime_id]['name']}\n🗓 {season}-fasl, {ep}-qism")
+    animes = await get_all_anime()
+    if anime_id in animes:
+        anime = animes[anime_id]
+        video_id = anime['seasons'][season_idx][ep_idx]
+        await call.message.answer_video(
+            video=video_id, 
+            caption=f"🎬 {anime['title']}\n🍿 {season_idx+1}-fasl, {ep_idx+1}-qism"
+        )
+    await call.answer()
 
 async def main():
-    # Bazani ishga tushirish qatori
-    from database import init_db
     await init_db()
-    
     print("🤖 Bot muvaffaqiyatli ishga tushdi...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
+
 
